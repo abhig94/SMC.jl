@@ -90,22 +90,22 @@ function initial_draw!(loglikelihood::Function, parameters::ParameterVector{U},
                        regime_switching::Bool = false, toggle::Bool = true) where {U<:Number}
     n_parts = length(c)
 
-    # ================== Define closure on one_draw function ==================
-    sendto(workers(), loglikelihood = loglikelihood)
-    sendto(workers(), parameters = parameters)
-    sendto(workers(), data       = data)
+    # ============== Define closure on one_draw function and preallocate ===============
+    # to avoid race conditions, deepcopy the parameter vector
+    # other modifications may be needed in loglikelihood as well
+    one_draw_closure() = one_draw(loglikelihood, deepcopy(parameters), data, regime_switching = regime_switching, toggle = toggle)
 
-    one_draw_closure() = one_draw(loglikelihood, parameters, data, regime_switching = regime_switching, toggle = toggle)
-    @everywhere one_draw_closure() = one_draw(loglikelihood, parameters, data, regime_switching = regime_switching, toggle = toggle)
-    # =========================================================================
+    draw_1, loglh_1, logprior_1 = one_draw_closure()
+    draws, loglh, logprior = repeat(draw_1, 1, n_parts), repeat(loglh_1, 1, n_parts), repeat(logprior_1, 1, n_parts)
+    # ==================================================================================
 
     # For each particle, finds valid parameter draw and returns loglikelihood & prior
-    draws, loglh, logprior = if parallel
-        @sync @distributed (vector_reduce) for i in 1:n_parts
-            one_draw_closure()
+    if parallel
+        Threads.@threads for i in 1:n_parts
+            draws[:,i], loglh[:,i], logprior[:,i] = one_draw_closure()
         end
     else
-        vector_reduce([one_draw_closure() for i in 1:n_parts]...)
+        draws, loglh, logprior = vector_reduce([one_draw_closure() for i in 1:n_parts]...)
     end
 
     update_draws!(c, draws)
@@ -155,31 +155,28 @@ function initialize_likelihoods!(loglikelihood::Function, parameters::ParameterV
                                  parallel::Bool = false,
                                  toggle::Bool = true) where {U<:Number}
     n_parts = length(c)
-    draws   = get_vals(c; transpose = false)
+    draws   = get_vals(c; transpose = false) # get draws from the cloud (n_parts, n_params)
 
     # Retire log-likelihood values from the old estimation to the field old_loglh
     update_old_loglh!(c, get_loglh(c))
 
-    # ============== Define closure on draw_likelihood function ===============
-    sendto(workers(), parameters = parameters)
-    sendto(workers(), loglikelihood = loglikelihood) # TODO: Check if this is necessary
-    sendto(workers(), data = data)
-
-    draw_likelihood_closure(draw::Vector{Float64}) = draw_likelihood(loglikelihood, parameters,
+    # ======== Define closure on draw_likelihood function and preallocate======
+    # to avoid race conditions, deepcopy the parameter vector
+    # other modifications may be needed in loglikelihood as well
+    draw_likelihood_closure(draw::Vector{Float64}) = draw_likelihood(loglikelihood, deepcopy(parameters),
                                                                      data, draw, toggle = toggle)
-    @everywhere draw_likelihood_closure(draw::Vector{Float64}) = draw_likelihood(loglikelihood,
-                                                                                 parameters,
-                                                                                 data, draw, toggle = toggle)
+
+    loglh, logprior = zeros(n_parts), zeros(n_parts) # preallocate
     # =========================================================================
 
     # TODO: handle when the likelihood with new data cannot be evaluated (returns -Inf),
     # even if the likelihood was not -Inf prior to incorporating new data
-    loglh, logprior = if parallel
-        @sync @distributed (scalar_reduce) for i in 1:n_parts
-            draw_likelihood_closure(draws[i, :])
-        end
+    if parallel
+        Threads.@threads for i in 1:n_parts
+            loglh[i,:], logprior[i,:] = draw_likelihood_closure(draws[i,:])
+        end 
     else
-        scalar_reduce([draw_likelihood_closure(draws[i, :]) for i in 1:n_parts]...)
+        loglh, logprior = scalar_reduce([draw_likelihood_closure(draws[i, :]) for i in 1:n_parts]...)
     end
     update_loglh!(c, loglh)
     update_logprior!(c, logprior)
