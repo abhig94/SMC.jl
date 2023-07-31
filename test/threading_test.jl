@@ -22,11 +22,9 @@ data = h5read("reference/test_data.h5", "data")
 init_cloud = SMC.Cloud(length(m.parameters), get_setting(m,:n_particles))
 one_draw_closure() = SMC.one_draw(loglik_fn, parameters, data)
 
-Random.seed!(42)
-# non-parallel reference
-draws, loglh, logprior = SMC.vector_reduce([one_draw_closure() for i in 1:n_parts]...)
-
 # initial draw
+Random.seed!(42)
+draws, loglh, logprior = SMC.vector_reduce([one_draw_closure() for i in 1:n_parts]...)
 SMC.initial_draw!(loglik_fn, parameters, data, init_cloud; parallel = false)
 
 
@@ -87,9 +85,9 @@ Threads.@threads for i in 1:n_parts
     x[i] = i
 end
 
-count(.!(loglh .≈ loglh_t))
-count(.!(logprior .≈ logprior_t))
-count(.!(1:n_parts .== x))
+count(.!(loglh .≈ loglh_t)) == 0
+count(.!(logprior .≈ logprior_t)) == 0
+count(.!(1:n_parts .== x)) == 0
 
 # testing actual functions
 cloud_1 = deepcopy(init_cloud)
@@ -98,9 +96,82 @@ cloud_2 = deepcopy(init_cloud)
 SMC.initialize_likelihoods!(loglik_fn, parameters, data, cloud_1)
 SMC.initialize_likelihoods!(loglik_fn, parameters, data, cloud_2; parallel = true)  # parallel = false is default
 
-SMC.get_loglh(cloud_1) ≈ SMC.get_loglh(cloud_2)
-SMC.get_loglh(cloud_1) ≈ SMC.get_loglh(init_cloud)
+@assert SMC.get_loglh(cloud_1) ≈ SMC.get_loglh(cloud_2)
+@assert SMC.get_loglh(cloud_1) ≈ SMC.get_loglh(init_cloud)
+@assert SMC.get_logprior(cloud_1) ≈ SMC.get_logprior(cloud_2)
 
-SMC.get_logprior(cloud_1) ≈ SMC.get_logprior(cloud_2)
 
+## resample 
+# Stores cumulative weights until given index
+
+Random.seed!(42)
+weights = rand(n_parts)
+
+cumulative_weights = cumsum(weights ./ sum(weights))
+offset = rand(n_parts)
+
+indx = Vector{Int64}(undef, n_parts)
+indx_d = similar(indx)
+indx_t = similar(indx)
+
+# default
+for i in 1:n_parts
+    indx[i] = findfirst(x -> offset[i] < x, cumulative_weights)
+end
+# distributed
+indx = @sync @distributed (vcat) for i in 1:n_parts
+    findfirst(x -> offset[i] < x, cumulative_weights)
+end
+# threaded
+Threads.@threads for i in 1:n_parts
+    indx_t[i] = findfirst(x -> offset[i] < x, cumulative_weights)
+end
+
+# test
+indx_d == indx
+indx_t == indx
+
+
+# using actual function
+Random.seed!(42)
+indx_1 = SMC.resample(weights; method = :multinomial, parallel = false)
+
+Random.seed!(42)
+indx_2 = SMC.resample(weights; method = :multinomial, parallel = true)
+
+indx_1 == indx_2
+
+
+## Mutation 
+θ_bar = SMC.weighted_mean(init_cloud)
+R     = SMC.weighted_cov(init_cloud)
+
+n_blocks = get_setting(m, :n_smc_blocks)
+n_free_para = length(m.parameters)
+blocks_free = SMC.generate_free_blocks(n_free_para, n_blocks)
+blocks_all  = SMC.generate_all_blocks(blocks_free, collect(1:n_free_para))
+
+ϕ_n = 0.0001
+ϕ_n1 = 0.0
+c = 0.5
+α = 1.0
+
+
+new_particles = similar(init_cloud.particles')
+new_particles_t = similar(init_cloud.particles')
+
+function mutation_closure(k::Int64)
+    Random.seed!(42)
+    SMC.mutation(loglik_fn, deepcopy(m.parameters), data, init_cloud.particles[k, :], θ_bar, R, n_free_para,
+                 blocks_free, blocks_all, ϕ_n, ϕ_n1; c = c, α = α,
+                 n_mh_steps = 1)
+end
+
+Threads.@threads for k in 1:n_parts
+    new_particles_t[:,k] = mutation_closure(k)
+end
+
+new_particles = hcat([mutation_closure(k) for k=1:n_parts]...)
+
+new_particles ≈ new_particles_t
 
