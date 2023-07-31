@@ -164,28 +164,16 @@ function smc(loglikelihood::Function, parameters::ParameterVector{U}, data::Matr
     ### Settings
     ########################################################################################
 
-    # Construct closure of mutation function so as to avoid issues with serialization
-    # across workers with different Julia system images
-    sendto(workers(), parameters = parameters)
-    sendto(workers(), data = data)
-
+    # Construct closure of mutation function with fixed arguments and a deepcopy of parameters
     function mutation_closure(p::Vector{S}, d_μ::Vector{S}, d_Σ::Matrix{S},
                               n_free_para::Int,
                               blocks_free::Vector{Vector{Int64}}, blocks_all::Vector{Vector{Int64}},
                               ϕ_n::S, ϕ_n1::S; c::S = 1.0, α::S = 1.0, n_mh_steps::Int = 1,
                               old_data::T = Matrix{S}(undef, size(data, 1), 0)) where {S<:Float64, T<:Matrix}
-        return mutation(loglikelihood, parameters, data, p, d_μ, d_Σ, n_free_para, blocks_free, blocks_all,
+        return mutation(loglikelihood, deepcopy(parameters), data, p, d_μ, d_Σ, n_free_para, blocks_free, blocks_all,
                         ϕ_n, ϕ_n1; c = c, α = α, n_mh_steps = n_mh_steps, old_data = old_data,
                         old_loglikelihood = old_loglikelihood, regime_switching = regime_switching,
                         toggle = toggle)
-    end
-    @everywhere function mutation_closure(p::Vector{S}, d_μ::Vector{S}, d_Σ::Matrix{S},
-                                          blocks_free::Vector{Vector{Int64}}, blocks_all::Vector{Vector{Int64}}, n_free_para::Int,
-                                          ϕ_n::S, ϕ_n1::S; c::S = 1.0, α::S = 1.0, n_mh_steps::Int = 1,
-                                          old_data::T = Matrix{S}(undef, size(data, 1), 0)) where {S<:Float64, T<:Matrix}
-        return mutation(loglikelihood, parameters, data, p, d_μ, d_Σ, blocks_free, blocks_all, n_free_para,
-                        ϕ_n, ϕ_n1; c = c, α = α, n_mh_steps = n_mh_steps, old_data = old_data,
-                        old_loglikelihood = old_loglikelihood, regime_switching = regime_switching, toggle = toggle)
     end
 
     # Check that if there's a tempered update, old and current vintages are different
@@ -468,17 +456,20 @@ function smc(loglikelihood::Function, parameters::ParameterVector{U}, data::Matr
         blocks_free = generate_free_blocks(n_free_para, n_blocks)
         blocks_all  = generate_all_blocks(blocks_free, free_para_inds)
 
-        new_particles = if parallel
-            @distributed (hcat) for k in 1:n_parts
-                mutation_closure(cloud.particles[k, :], θ_bar_fr, R_fr, n_free_para,
-                                 blocks_free, blocks_all, ϕ_n, ϕ_n1; c = c, α = α,
-                                 n_mh_steps = n_mh_steps, old_data = old_data)
+        # Generate new particles
+        new_particles = similar(cloud.particles')
+
+        if parallel
+            Threads.@threads for k in 1:n_parts
+                new_particles[:,k] = mutation_closure(cloud.particles[k, :], θ_bar_fr, R_fr, n_free_para,
+                                                      blocks_free, blocks_all, ϕ_n, ϕ_n1; c = c, α = α,
+                                                      n_mh_steps = n_mh_steps, old_data = old_data)
             end
         else
-            hcat([mutation_closure(cloud.particles[k, :], θ_bar_fr, R_fr, n_free_para,
-                                   blocks_free, blocks_all, ϕ_n, ϕ_n1; c = c,
-                                   α = α, n_mh_steps = n_mh_steps,
-                                   old_data = old_data) for k=1:n_parts]...)
+            new_particles = hcat([mutation_closure(cloud.particles[k, :], θ_bar_fr, R_fr, n_free_para,
+                                                    blocks_free, blocks_all, ϕ_n, ϕ_n1; c = c,
+                                                    α = α, n_mh_steps = n_mh_steps,
+                                                    old_data = old_data) for k=1:n_parts]...)
         end
         update_cloud!(cloud, new_particles)
         update_acceptance_rate!(cloud)
