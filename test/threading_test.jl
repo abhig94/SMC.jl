@@ -7,6 +7,9 @@ using Printf, Distributed, Random, HDF5, FileIO, JLD2
 cd("C:\\Users\\Abhi\\.julia\\dev\\SMC\\test")
 include("C:\\Users\\Abhi\\.julia\\dev\\SMC\\test\\modelsetup.jl")
 
+# avoid multi-threading on both for loops and in linear algebra functions
+BLAS.set_num_threads(1)
+
 Random.seed!(42)
 
 ## set up model and basics
@@ -25,9 +28,7 @@ one_draw_closure() = SMC.one_draw(loglik_fn, parameters, data)
 # initial draw
 Random.seed!(42)
 draws, loglh, logprior = SMC.vector_reduce([one_draw_closure() for i in 1:n_parts]...)
-SMC.initial_draw!(loglik_fn, parameters, data, init_cloud; parallel = false)
-
-
+SMC.initial_draw!(loglik_fn, parameters, data, init_cloud; parallel = true)
 
 
 ## test initial_draw!
@@ -175,3 +176,21 @@ new_particles = hcat([mutation_closure(k) for k=1:n_parts]...)
 
 new_particles ≈ new_particles_t
 
+## timing tests 
+
+@time SMC.initial_draw!(loglik_fn, parameters, data, init_cloud; parallel = true)
+@time SMC.initial_draw!(loglik_fn, parameters, data, init_cloud; parallel = false)
+
+@time SMC.initialize_likelihoods!(loglik_fn, parameters, data, init_cloud; parallel = false)
+@time SMC.initialize_likelihoods!(loglik_fn, parameters, data, init_cloud; parallel = true) 
+
+Random.seed!(42)
+weights = rand(n_parts)
+@time SMC.resample(weights; method = :multinomial, parallel = false)
+@time SMC.resample(weights; method = :multinomial, parallel = true)
+
+# requires mutation code from above
+@time new_particles = hcat([mutation_closure(k) for k=1:n_parts]...)
+@time Threads.@threads for k in 1:n_parts
+    new_particles_t[:,k] = mutation_closure(k)
+end
