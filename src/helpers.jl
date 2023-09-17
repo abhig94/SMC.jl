@@ -11,6 +11,8 @@ function solve_adaptive_ϕ(cloud::Cloud, proposed_fixed_schedule::Vector{Float64
                           tempering_target::Float64, resampled_last_period::Bool)
     n_Φ = length(proposed_fixed_schedule)
 
+    println("   Computing ϕ_n for iteration $i")
+
     if resampled_last_period
         # The ESS_bar is reset to target an evenly weighted particle population
         ESS_bar = tempering_target * length(cloud)
@@ -46,6 +48,7 @@ function solve_adaptive_ϕ(cloud::Cloud, proposed_fixed_schedule::Vector{Float64
     # i.e. the adaptive ϕ schedule should not outpace the fixed schedule at the end
     # (when the fixed schedule tends to drop by less than 5% per iteration)
     if ϕ_prop != 1. || optimal_ϕ_function(ϕ_prop) < 0
+        println("   Doing some root finding")
         ϕ_n = fzero(optimal_ϕ_function, [ϕ_n1, ϕ_prop], xtol = 0.)
         push!(cloud.tempering_schedule, ϕ_n)
     else
@@ -215,7 +218,7 @@ parameters from the covariance matrix for the mutation step.
 function generate_free_blocks(n_free_para::Int64, n_blocks::Int64)
     rand_inds = shuffle(1:n_free_para)
 
-    subset_length     = cld(n_free_para, n_blocks) # ceiling division
+    subset_length     = fld(n_free_para, n_blocks) # floor division
     last_block_length = n_free_para - subset_length*(n_blocks - 1)
 
     blocks_free = Vector{Vector{Int64}}(undef, n_blocks)
