@@ -101,6 +101,9 @@ function initial_draw!(loglikelihood::Function, parameters::ParameterVector{U},
 
     # For each particle, finds valid parameter draw and returns loglikelihood & prior
     if parallel
+
+        println("Parallel initialization...")
+
         Threads.@threads for i in 1:n_parts
             draws[:,i], loglh[:,i], logprior[:,i] = one_draw_closure()
         end

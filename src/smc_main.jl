@@ -322,6 +322,9 @@ function smc(loglikelihood::Function, parameters::ParameterVector{U}, data::Matr
     elseif continue_intermediate
         cloud = load(loadpath, "cloud")
     else
+
+        println(verbose, :high, "\n Initializing cloud... \n")
+
         # Initialization of Particle Array Cloud
         cloud = Cloud(n_para, n_parts)
 
@@ -422,6 +425,8 @@ function smc(loglikelihood::Function, parameters::ParameterVector{U}, data::Matr
         # Resample if degeneracy/ESS metric falls below the accepted threshold
         if (cloud.ESS[i] < threshold)
 
+            println(verbose, :low, " Resampling ...")
+
             # Resample according to particle weights, uniformly reset weights to 1/n_parts
             new_inds = resample(normalized_weights/n_parts; method = resampling_method,
                                 parallel = parallel)
@@ -459,11 +464,18 @@ function smc(loglikelihood::Function, parameters::ParameterVector{U}, data::Matr
         # Generate new particles
         new_particles = similar(cloud.particles')
 
+        println(verbose, :low, " Mutating ...")
+
         if parallel
             Threads.@threads for k in 1:n_parts
                 new_particles[:,k] = mutation_closure(cloud.particles[k, :], θ_bar_fr, R_fr, n_free_para,
                                                       blocks_free, blocks_all, ϕ_n, ϕ_n1; c = c, α = α,
                                                       n_mh_steps = n_mh_steps, old_data = old_data)
+                
+                # GC manually                                      
+                if mod(k,10) == 0
+                    GC.gc()
+                end
             end
         else
             new_particles = hcat([mutation_closure(cloud.particles[k, :], θ_bar_fr, R_fr, n_free_para,
@@ -496,6 +508,9 @@ function smc(loglikelihood::Function, parameters::ParameterVector{U}, data::Matr
                 write(file, "j", j)
             end
         end
+
+        # garbage collection, just in case
+        GC.gc()
     end
 
     ##################################################################################
