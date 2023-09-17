@@ -112,7 +112,8 @@ function mutation(loglikelihood::Function, parameters::ParameterVector{U},
             catch err
                 if isa(err, ParamBoundsError) || isa(err, LinearAlgebra.LAPACKException) ||
                    isa(err, PosDefException)  || isa(err, SingularException)             ||
-                   isa(err, DomainError)
+                   isa(err, DomainError)      || isa(err, ArgumentError)                 ||
+                   isa(err, LoadError)        || isa(err, BoundsError)                   
 
                     prior_new = like_new = like_old_data = -Inf
                 else
@@ -133,6 +134,10 @@ function mutation(loglikelihood::Function, parameters::ParameterVector{U},
             step_prob = rand() # Draw again for next step
         end
     end
+
+    # possibly redundant GC
+    # GC.gc()
+
     update_mutation!(p, para, like, logprior, like_prev, accept / n_free_para)
     return p
 end
