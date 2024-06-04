@@ -377,6 +377,7 @@ function smc(loglikelihood::Function, parameters::ParameterVector{U}, data::Matr
         if use_fixed_schedule
             ϕ_n = cloud.tempering_schedule[i]
         else
+            println(verbose, :high, "   Computing ϕ_n for iteration $i")
             ϕ_n, resampled_last_period, j, ϕ_prop = solve_adaptive_ϕ(cloud,
                                                        proposed_fixed_schedule,
                                                        i, j, ϕ_prop, ϕ_n1,
@@ -467,16 +468,42 @@ function smc(loglikelihood::Function, parameters::ParameterVector{U}, data::Matr
         println(verbose, :low, " Mutating ...")
 
         if parallel
-            Threads.@threads for k in 1:n_parts
-                new_particles[:,k] = mutation_closure(cloud.particles[k, :], θ_bar_fr, R_fr, n_free_para,
-                                                      blocks_free, blocks_all, ϕ_n, ϕ_n1; c = c, α = α,
-                                                      n_mh_steps = n_mh_steps, old_data = old_data)
+            n_threads = Threads.nthreads()
+            chunk_size = n_threads * 3
+
+            # Split particles into chunks
+            chunks = [(i-1)*chunk_size+1:i*chunk_size for i in 1:div(n_parts, chunk_size)]
+            chunks = [chunks ; [(div(n_parts, chunk_size)*chunk_size + 1):n_parts]]
+            n_chunks = length(chunks)
+            scaler = n_parts / n_chunks
+
+            start_t = time()
+
+            for chunk in chunks
+                a = time()
+
+                println(verbose, :high, " Mutating chunk $chunk ...")
+                Threads.@threads for k in chunk
+                    new_particles[:,k] = mutation_closure(cloud.particles[k, :], θ_bar_fr, R_fr, n_free_para,
+                                                        blocks_free, blocks_all, ϕ_n, ϕ_n1; c = c, α = α,
+                                                        n_mh_steps = n_mh_steps, old_data = old_data)
+                end
                 
                 # GC manually                                      
-                if mod(k,10) == 0
-                    GC.gc()
+                GC.gc()
+
+                b = time()
+                time_left = (b-a) / chunk_size * n_parts / 60
+
+                println(verbose, :high, " Mutating chunk $chunk took $(round((b-a))) seconds")
+                if chunk == chunks[1]
+                    println(verbose, :low, " Pace: $(round(time_left,digits=1)) minutes per stage")
                 end
             end
+
+            end_t = time()
+            println(verbose, :low, " Mutating took $(round((end_t-start_t)/60,digits=1)) minutes")
+
         else
             new_particles = hcat([mutation_closure(cloud.particles[k, :], θ_bar_fr, R_fr, n_free_para,
                                                     blocks_free, blocks_all, ϕ_n, ϕ_n1; c = c,
@@ -491,6 +518,7 @@ function smc(loglikelihood::Function, parameters::ParameterVector{U}, data::Matr
         ##############################################################################
         stage_sampling_time = Float64((time_ns() - start_time) * 1e-9)
         cloud.total_sampling_time += stage_sampling_time
+        println(verbose, :low, " Stage $(cloud.stage_index) took $(round(stage_sampling_time/60, digits=1)) minutes")
 
         end_stage_print(cloud, para_symbols; verbose = verbose,
                         use_fixed_schedule = use_fixed_schedule)
@@ -510,7 +538,7 @@ function smc(loglikelihood::Function, parameters::ParameterVector{U}, data::Matr
         end
 
         # garbage collection, just in case
-        GC.gc()
+        # GC.gc()
     end
 
     ##################################################################################
